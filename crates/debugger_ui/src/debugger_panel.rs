@@ -684,6 +684,27 @@ impl DebugPanel {
             .and_then(|state| state.read(cx).thread_status(cx))
             .unwrap_or(project::debugger::session::ThreadStatus::Exited);
 
+        let progress_labels: Vec<SharedString> = active_session
+            .as_ref()
+            .map(|session| {
+                session
+                    .read(cx)
+                    .session(cx)
+                    .read(cx)
+                    .progress_tasks()
+                    .values()
+                    .map(|event| {
+                        let mut label = event.title.clone();
+                        if let Some(message) = &event.message {
+                            label.push_str(": ");
+                            label.push_str(message);
+                        }
+                        SharedString::from(label)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Some(
             div.w_full()
                 .py_1()
@@ -954,23 +975,33 @@ impl DebugPanel {
                                             }),
                                         )
                                     })
-                                    .when(
-                                        cx.has_flag::<DebuggerHistoryFeatureFlag>(),
-                                        |this| {
-                                            this.child(Divider::vertical()).child(
-                                                SplitButton::new(
-                                                    self.render_history_button(
-                                                        &running_state,
-                                                        thread_status,
-                                                        window,
-                                                    ),
-                                                    self.render_history_toggle_button(
-                                                        thread_status,
-                                                        &running_state,
-                                                    )
-                                                    .into_any_element(),
+                                    .when(cx.has_flag::<DebuggerHistoryFeatureFlag>(), |this| {
+                                        this.child(Divider::vertical()).child(
+                                            SplitButton::new(
+                                                self.render_history_button(
+                                                    &running_state,
+                                                    thread_status,
+                                                    window,
+                                                ),
+                                                self.render_history_toggle_button(
+                                                    thread_status,
+                                                    &running_state,
                                                 )
-                                                .style(ui::SplitButtonStyle::Outlined),
+                                                .into_any_element(),
+                                            )
+                                            .style(ui::SplitButtonStyle::Outlined),
+                                        )
+                                    })
+                                    .when(
+                                        !progress_labels.is_empty(),
+                                        |this| {
+                                            this.child(Divider::vertical()).children(
+                                                progress_labels.into_iter().map(|label| {
+                                                    Label::new(label)
+                                                        .size(LabelSize::Small)
+                                                        .color(Color::Muted)
+                                                        .truncate()
+                                                }),
                                             )
                                         },
                                     )

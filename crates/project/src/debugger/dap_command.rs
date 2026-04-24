@@ -1543,7 +1543,7 @@ fn dap_client_capabilities(adapter_id: String) -> InitializeRequestArguments {
         supports_variable_paging: Some(false),
         supports_run_in_terminal_request: Some(true),
         supports_memory_references: Some(true),
-        supports_progress_reporting: Some(false),
+        supports_progress_reporting: Some(true),
         supports_invalidated_event: Some(false),
         lines_start_at1: Some(true),
         columns_start_at1: Some(true),

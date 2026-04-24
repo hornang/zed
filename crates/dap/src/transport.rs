@@ -3,7 +3,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use async_pipe::{PipeReader, PipeWriter};
 use dap_types::{
     ErrorResponse,
-    messages::{Message, Response},
+    messages::{Events, Message, Response},
 };
 use futures::{AsyncRead, AsyncReadExt as _, AsyncWrite, FutureExt as _, channel::oneshot, select};
 use gpui::{AppContext as _, AsyncApp, BackgroundExecutor, Task};
@@ -142,8 +142,8 @@ impl PendingRequests {
         Ok(inner.remove(&sequence_id))
     }
 
-    pub(crate) fn shutdown(&mut self) {
-        self.flush(anyhow!("transport shutdown"));
+    pub(crate) fn shutdown(&mut self, error: anyhow::Error) {
+        self.flush(error);
         self.inner = None;
     }
 }
@@ -205,10 +205,10 @@ impl TransportDelegate {
                     Ok(()) => {
                         pending_requests
                             .lock()
-                            .flush(anyhow!("debugger shutdown unexpectedly"));
+                            .shutdown(anyhow!("debugger closed the connection"));
                     }
                     Err(e) => {
-                        pending_requests.lock().flush(e);
+                        pending_requests.lock().shutdown(e);
                     }
                 }
             }));
@@ -345,7 +345,7 @@ impl TransportDelegate {
                 ConnectionResult::Timeout => anyhow::bail!("Timed out when connecting to debugger"),
                 ConnectionResult::ConnectionReset => {
                     log::info!("Debugger closed the connection");
-                    return Ok(());
+                    break Ok(());
                 }
                 ConnectionResult::Result(Ok(Message::Response(res))) => {
                     let tx = pending_requests.lock().remove(res.request_seq)?;
@@ -363,6 +363,12 @@ impl TransportDelegate {
         };
 
         log::debug!("Handle adapter output dropped");
+
+        // Notify the session that the adapter connection has closed so it can shut
+        // down cleanly. Well-behaved adapters send a Terminated event before closing,
+        // but we inject one here to handle adapters that are killed or crash without
+        // sending it. The session's shutdown guard makes a duplicate Terminated a no-op.
+        message_handler(Message::Event(Box::new(Events::Terminated(None))));
 
         result
     }

@@ -717,6 +717,7 @@ pub struct Session {
     node_runtime: Option<NodeRuntime>,
     http_client: Option<Arc<dyn HttpClient>>,
     companion_port: Option<u16>,
+    progress_tasks: IndexMap<String, dap::ProgressStartEvent>,
 }
 
 trait CacheableCommand: Any + Send + Sync {
@@ -892,6 +893,7 @@ impl Session {
                 node_runtime,
                 http_client,
                 companion_port: None,
+                progress_tasks: IndexMap::default(),
             }
         })
     }
@@ -1388,6 +1390,10 @@ impl Session {
         )
     }
 
+    pub fn active_progress(&self) -> &IndexMap<String, dap::ProgressStartEvent> {
+        &self.progress_tasks
+    }
+
     pub fn respond_to_client(
         &self,
         request_seq: u64,
@@ -1517,6 +1523,7 @@ impl Session {
     }
 
     pub(crate) fn handle_dap_event(&mut self, event: Box<Events>, cx: &mut Context<Self>) {
+        // log::info!("handle_dap_event: {:?}", event);
         match *event {
             Events::Initialized(_) => {
                 debug_assert!(
@@ -1636,9 +1643,27 @@ impl Session {
             }
             Events::Memory(_) => {}
             Events::Process(_) => {}
-            Events::ProgressEnd(_) => {}
-            Events::ProgressStart(_) => {}
-            Events::ProgressUpdate(_) => {}
+            Events::ProgressEnd(event) => {
+                log::info!("Events::ProgressEnd: {:?}", event);
+                self.progress_tasks.shift_remove(&event.progress_id);
+                cx.notify();
+            }
+            Events::ProgressStart(event) => {
+                log::info!("Events::ProgressStart: {:?}", event);
+                self.progress_tasks.insert(event.progress_id.clone(), event);
+                cx.notify();
+            }
+            Events::ProgressUpdate(event) => {
+                log::info!("Events::ProgressUpdate: {:?}", event);
+
+                if let Some(task) = self.progress_tasks.get_mut(&event.progress_id) {
+                    task.message = event.message;
+                    task.percentage = event.percentage;
+                    cx.notify();
+                } else {
+                    log::warn!("No progress task found for event: {:?}", event);
+                }
+            }
             Events::Invalidated(_) => {}
             Events::Other(event) => {
                 if event.event == "launchBrowserInCompanion" {

@@ -139,12 +139,45 @@ impl Render for RunningState {
                 (callbacks.wrap_div_with_search_actions)(div(), self.active_pane.clone())
             })
             .unwrap_or_else(div);
+
+        let progress_labels: Vec<SharedString> = self
+            .session
+            .read(cx)
+            .active_progress()
+            .values()
+            .map(|event| {
+                let mut label = event.title.clone();
+                if let Some(message) = &event.message {
+                    label.push_str(": ");
+                    label.push_str(message);
+                }
+                if let Some(percentage) = event.percentage {
+                    label.push_str(&format!(" ({}%)", percentage.round() as u64));
+                }
+                SharedString::from(label)
+            })
+            .collect();
+
         outer
             .v_flex()
             .size_full()
             .key_context("DebugSessionItem")
             .track_focus(&self.focus_handle(cx))
             .child(h_flex().flex_1().child(pane))
+            .when(!progress_labels.is_empty(), |this| {
+                this.child(
+                    h_flex()
+                        .px_2()
+                        .py_1()
+                        .gap_3()
+                        .bg(cx.theme().colors().editor_background)
+                        .border_t_1()
+                        .border_color(cx.theme().colors().border)
+                        .children(progress_labels.into_iter().map(|label| {
+                            Label::new(label).size(LabelSize::Small).color(Color::Muted)
+                        })),
+                )
+            })
     }
 }
 

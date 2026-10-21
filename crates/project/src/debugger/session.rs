@@ -5,9 +5,9 @@ use super::dap_command::{
     self, Attach, ConfigurationDone, ContinueCommand, DataBreakpointInfoCommand, DisconnectCommand,
     EvaluateCommand, Initialize, Launch, LoadedSourcesCommand, LocalDapCommand, LocationsCommand,
     ModulesCommand, NextCommand, PauseCommand, RestartCommand, RestartStackFrameCommand,
-    ScopesCommand, SetDataBreakpointsCommand, SetExceptionBreakpoints, SetVariableValueCommand,
-    StackTraceCommand, StepBackCommand, StepCommand, StepInCommand, StepOutCommand,
-    TerminateCommand, TerminateThreadsCommand, ThreadsCommand, VariablesCommand,
+    RttWindowOpenedCommand, ScopesCommand, SetDataBreakpointsCommand, SetExceptionBreakpoints,
+    SetVariableValueCommand, StackTraceCommand, StepBackCommand, StepCommand, StepInCommand,
+    StepOutCommand, TerminateCommand, TerminateThreadsCommand, ThreadsCommand, VariablesCommand,
 };
 use super::dap_store::DapStore;
 use crate::debugger::breakpoint_store::BreakpointSessionState;
@@ -718,6 +718,13 @@ pub struct Session {
     http_client: Option<Arc<dyn HttpClient>>,
     companion_port: Option<u16>,
     progress_tasks: IndexMap<String, dap::ProgressStartEvent>,
+    rtt_channels: HashMap<u64, RttChannel>,
+}
+
+struct RttChannel {
+    name: String,
+    /// RTT data arrives in arbitrary chunks, while each console output event is rendered as its own line.
+    partial_line: String,
 }
 
 trait CacheableCommand: Any + Send + Sync {
@@ -894,6 +901,7 @@ impl Session {
                 http_client,
                 companion_port: None,
                 progress_tasks: IndexMap::default(),
+                rtt_channels: HashMap::default(),
             }
         })
     }
@@ -1678,6 +1686,23 @@ impl Session {
                         return;
                     };
                     self.kill_browser(request, cx);
+                } else if event.event == "probe-rs-rtt-channel-config" {
+                    match serde_json::from_value(event.body) {
+                        Ok(config) => self.open_rtt_channel(config, cx),
+                        Err(error) => log::error!(
+                            "failed to deserialize probe-rs-rtt-channel-config event: {error}"
+                        ),
+                    }
+                } else if event.event == "probe-rs-rtt-data" {
+                    match serde_json::from_value(event.body) {
+                        Ok(data) => {
+                            self.push_rtt_data(data);
+                            cx.notify();
+                        }
+                        Err(error) => {
+                            log::error!("failed to deserialize probe-rs-rtt-data event: {error}")
+                        }
+                    }
                 }
             }
         }
@@ -1808,6 +1833,55 @@ impl Session {
             .and_modify(|request_map| {
                 request_map.remove(key);
             });
+    }
+
+    fn open_rtt_channel(&mut self, config: RttChannelConfigParams, cx: &mut Context<Self>) {
+        self.rtt_channels.insert(
+            config.channel_number,
+            RttChannel {
+                name: config.channel_name,
+                partial_line: String::new(),
+            },
+        );
+        self.state
+            .request_dap(RttWindowOpenedCommand {
+                channel_number: config.channel_number,
+            })
+            .detach_and_log_err(cx);
+    }
+
+    fn push_rtt_data(&mut self, data: RttDataParams) {
+        let Some(channel) = self.rtt_channels.get_mut(&data.channel_number) else {
+            log::warn!(
+                "received RTT data for unknown channel {}",
+                data.channel_number
+            );
+            return;
+        };
+
+        log::info!("DATA {:?}", data.data);
+
+        channel.partial_line.push_str(&data.data);
+        let Some(last_newline) = channel.partial_line.rfind('\n') else {
+            return;
+        };
+        let remainder = channel.partial_line.split_off(last_newline + 1);
+        let complete_lines = std::mem::replace(&mut channel.partial_line, remainder);
+        let channel_name = channel.name.clone();
+
+        for line in complete_lines.lines() {
+            self.push_output(OutputEvent {
+                category: Some(OutputEventCategory::Stdout),
+                output: format!("[{channel_name}] {line}"),
+                group: None,
+                variables_reference: None,
+                source: None,
+                line: None,
+                column: None,
+                data: None,
+                location_reference: None,
+            });
+        }
     }
 
     fn push_output(&mut self, event: OutputEvent) {
@@ -3292,6 +3366,20 @@ struct LaunchBrowserInCompanionParams {
 #[serde(rename_all = "camelCase")]
 struct KillCompanionBrowserParams {
     launch_id: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct RttChannelConfigParams {
+    channel_number: u64,
+    channel_name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct RttDataParams {
+    channel_number: u64,
+    data: String,
 }
 
 async fn spawn_companion(

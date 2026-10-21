@@ -13,6 +13,7 @@ use dap::{
 };
 
 use rpc::proto;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use util::ResultExt;
 
@@ -1971,5 +1972,45 @@ impl LocalDapCommand for dap::WriteMemoryArguments {
         message: <Self::DapRequest as dap::requests::Request>::Response,
     ) -> Result<Self::Response> {
         Ok(message)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RttWindowOpenedArguments {
+    channel_number: u64,
+    window_is_open: bool,
+}
+
+/// probe-rs custom request telling the adapter that the client is ready to display an RTT channel.
+pub(crate) enum RttWindowOpened {}
+
+impl dap::requests::Request for RttWindowOpened {
+    const COMMAND: &'static str = "rttWindowOpened";
+    type Arguments = RttWindowOpenedArguments;
+    type Response = Value;
+}
+
+#[derive(Clone, Debug, Hash, PartialEq)]
+pub(crate) struct RttWindowOpenedCommand {
+    pub(crate) channel_number: u64,
+}
+
+impl LocalDapCommand for RttWindowOpenedCommand {
+    type Response = ();
+    type DapRequest = RttWindowOpened;
+
+    fn to_dap(&self) -> <Self::DapRequest as dap::requests::Request>::Arguments {
+        RttWindowOpenedArguments {
+            channel_number: self.channel_number,
+            window_is_open: true,
+        }
+    }
+
+    fn response_from_dap(
+        &self,
+        _message: <Self::DapRequest as dap::requests::Request>::Response,
+    ) -> Result<Self::Response> {
+        Ok(())
     }
 }
